@@ -56,6 +56,92 @@ with st.expander("🔧 Feature Selection", expanded=False):
     categorical_cols = [c for c in categorical_cols if c in selected_features]
     st.markdown(f"**Selected:** {len(selected_features)} features ({len(numeric_cols)} numeric, {len(categorical_cols)} categorical)")
 
+    st.markdown("---")
+    st.markdown(
+        "**Algorithmic Feature Selection** "
+        "*(applied automatically after encoding & scaling — uses training data only to avoid data leakage)*"
+    )
+
+    algo_fs_method = st.selectbox(
+        "Method",
+        [
+            "None",
+            "SelectKBest",
+            "Lasso (L1 Regularization)",
+            "Recursive Feature Elimination (RFE)",
+            "Dimensionality Reduction (PCA)",
+        ],
+        help=(
+            "SelectKBest — keeps the k highest-scoring features via a univariate statistical test.\n"
+            "Lasso — fits an L1-penalized model and drops near-zero-coefficient features.\n"
+            "RFE — iteratively prunes the least important features using a linear estimator.\n"
+            "PCA — projects features into a compact set of principal components."
+        ),
+        key="algo_fs_method",
+    )
+
+    algo_fs_params: dict = {}
+
+    if algo_fs_method == "SelectKBest":
+        st.caption(
+            "Scores every feature with an F-test (F-classification or F-regression) "
+            "and retains the top k. Fast and effective for linear relationships."
+        )
+        _max_k = max(1, len(selected_features))
+        skb_k = st.slider(
+            "Number of features to select (k)",
+            1, _max_k, min(10, _max_k),
+            key="skb_k",
+        )
+        algo_fs_params["k"] = skb_k
+
+    elif algo_fs_method == "Lasso (L1 Regularization)":
+        st.caption(
+            "Fits a Lasso (regression) or L1-penalized logistic regression (classification) "
+            "on the preprocessed training data. Features whose coefficients shrink to zero are removed."
+        )
+        lasso_C = st.number_input(
+            "Regularization strength C — or α for regression (smaller = stronger sparsity)",
+            value=0.1, min_value=1e-4, max_value=100.0, step=0.01, format="%.4f",
+            key="lasso_C",
+        )
+        lasso_threshold = st.selectbox(
+            "Coefficient magnitude threshold for retention",
+            ["mean", "median", "0.5*mean", "1.25*mean"],
+            help="Features with |coefficient| below this threshold are dropped.",
+            key="lasso_thresh",
+        )
+        algo_fs_params["C"] = lasso_C
+        algo_fs_params["threshold"] = lasso_threshold
+
+    elif algo_fs_method == "Recursive Feature Elimination (RFE)":
+        st.caption(
+            "Trains a linear model, removes the feature with the smallest weight, and repeats "
+            "until the desired number of features remains. Captures feature interactions that "
+            "univariate tests miss."
+        )
+        _max_rfe = max(1, len(selected_features))
+        rfe_n = st.slider(
+            "Number of features to keep",
+            1, _max_rfe, min(10, _max_rfe),
+            key="rfe_n",
+        )
+        algo_fs_params["n_features"] = rfe_n
+
+    elif algo_fs_method == "Dimensionality Reduction (PCA)":
+        st.caption(
+            "Computes principal components — linear combinations of the original features "
+            "ordered by the variance they explain. Useful when features are highly correlated. "
+            "Note: components are no longer interpretable as individual features."
+        )
+        _max_pca = max(1, min(len(selected_features), 50))
+        pca_n = st.slider(
+            "Number of principal components",
+            1, _max_pca, min(10, _max_pca),
+            key="pca_n",
+        )
+        algo_fs_params["n_components"] = pca_n
+
 # ── Section 1: Missing Value Handling ────────────────────────────────────────
 with st.expander("1️⃣ Missing Value Handling", expanded=True):
     col1, col2 = st.columns(2)
@@ -462,6 +548,87 @@ if st.button("🚀 Run Preprocessing", type="primary", use_container_width=True)
                             X_test_processed = np.hstack([X_test_processed, interaction_test])
                             feature_names.append(f"{interaction_cols[i]}__x__{interaction_cols[j]}")
 
+            # Step 6b: Algorithmic feature selection
+            if algo_fs_method != "None":
+                progress_bar.progress(68)
+                try:
+                    y_train_arr_fs = np.asarray(y_train)
+
+                    if algo_fs_method == "SelectKBest":
+                        from sklearn.feature_selection import SelectKBest, f_classif, f_regression
+                        score_fn = f_regression if task_type == "regression" else f_classif
+                        k = min(algo_fs_params["k"], X_train_processed.shape[1])
+                        fs_selector = SelectKBest(score_fn, k=k)
+                        X_train_processed = fs_selector.fit_transform(X_train_processed, y_train_arr_fs)
+                        X_test_processed = fs_selector.transform(X_test_processed)
+                        mask = fs_selector.get_support()
+                        feature_names = [fn for fn, m in zip(feature_names, mask) if m]
+                        st.info(f"SelectKBest: retained {X_train_processed.shape[1]} features.")
+
+                    elif algo_fs_method == "Lasso (L1 Regularization)":
+                        from sklearn.feature_selection import SelectFromModel
+                        if task_type == "regression":
+                            from sklearn.linear_model import Lasso
+                            lasso_est = Lasso(alpha=algo_fs_params["C"], max_iter=2000)
+                        else:
+                            from sklearn.linear_model import LogisticRegression
+                            lasso_est = LogisticRegression(
+                                C=algo_fs_params["C"], penalty="l1",
+                                solver="liblinear", max_iter=1000,
+                            )
+                        fs_selector = SelectFromModel(lasso_est, threshold=algo_fs_params["threshold"])
+                        fs_selector.fit(X_train_processed, y_train_arr_fs)
+                        X_train_new = fs_selector.transform(X_train_processed)
+                        X_test_new = fs_selector.transform(X_test_processed)
+                        if X_train_new.shape[1] == 0:
+                            st.warning("⚠️ Lasso removed all features — try a larger C or a looser threshold. Skipping.")
+                        else:
+                            X_train_processed = X_train_new
+                            X_test_processed = X_test_new
+                            mask = fs_selector.get_support()
+                            feature_names = [fn for fn, m in zip(feature_names, mask) if m]
+                            st.info(f"Lasso: retained {X_train_processed.shape[1]} features.")
+
+                    elif algo_fs_method == "Recursive Feature Elimination (RFE)":
+                        from sklearn.feature_selection import RFE
+                        from sklearn.linear_model import LogisticRegression, LinearRegression
+                        est_rfe = (
+                            LinearRegression()
+                            if task_type == "regression"
+                            else LogisticRegression(max_iter=1000, solver="liblinear")
+                        )
+                        n_feat = min(algo_fs_params["n_features"], X_train_processed.shape[1])
+                        fs_selector = RFE(est_rfe, n_features_to_select=n_feat)
+                        X_train_processed = fs_selector.fit_transform(X_train_processed, y_train_arr_fs)
+                        X_test_processed = fs_selector.transform(X_test_processed)
+                        mask = fs_selector.get_support()
+                        feature_names = [fn for fn, m in zip(feature_names, mask) if m]
+                        st.info(f"RFE: retained {X_train_processed.shape[1]} features.")
+
+                    elif algo_fs_method == "Dimensionality Reduction (PCA)":
+                        from sklearn.decomposition import PCA
+                        n_comp = min(
+                            algo_fs_params["n_components"],
+                            X_train_processed.shape[1],
+                            X_train_processed.shape[0],
+                        )
+                        pca_obj = PCA(n_components=n_comp, random_state=42)
+                        X_train_processed = pca_obj.fit_transform(X_train_processed)
+                        X_test_processed = pca_obj.transform(X_test_processed)
+                        feature_names = [f"PC_{i + 1}" for i in range(n_comp)]
+                        st.session_state["_pca"] = pca_obj
+                        explained = pca_obj.explained_variance_ratio_.cumsum()[-1] * 100
+                        st.info(
+                            f"PCA: {n_comp} components explain "
+                            f"{explained:.1f}% of total variance."
+                        )
+
+                except Exception as _fs_err:
+                    st.warning(
+                        f"⚠️ Algorithmic feature selection ({algo_fs_method}) encountered an error "
+                        f"and was skipped: {_fs_err}"
+                    )
+
             # Step 7: Target transformation (regression only)
             progress_bar.progress(70)
             target_transformer_obj = None
@@ -550,6 +717,8 @@ if st.button("🚀 Run Preprocessing", type="primary", use_container_width=True)
                 "poly_degree": poly_degree if use_poly else None,
                 "task_type": task_type,
                 "target_transform": target_transform,
+                "algo_fs_method": algo_fs_method,
+                "algo_fs_params": algo_fs_params,
             }
 
             progress_bar.progress(100)

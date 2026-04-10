@@ -17,7 +17,7 @@
 | Step | Module | What it does |
 |------|--------|--------------|
 | 1 | 📂 **Data Upload** | Load CSV / Excel files or choose a built-in sample dataset; set the target column and protected attributes |
-| 2 | ⚙️ **Preprocessing** | Impute missing values, encode categoricals, scale features, handle class imbalance |
+| 2 | ⚙️ **Preprocessing** | Impute missing values, encode categoricals, scale features, handle class imbalance; automated feature selection via SelectKBest, Lasso (L1), RFE, or PCA |
 | 3 | 🔍 **Bias Detection** | Visualize demographic distributions and flag statistical bias in protected attributes *before* training |
 | 4 | 🏋️ **Model Training** | Train one of nine ML algorithms (Logistic Regression, Decision Tree, Random Forest, Gradient Boosting, XGBoost, LightGBM, SVM, KNN, Naive Bayes) with cross-validation and hyperparameter tuning |
 | 5 | ⚖️ **Fairness Evaluation** | Measure demographic parity difference/ratio, equalized odds, equal opportunity, and disparate impact using [Fairlearn](https://fairlearn.org/) |
