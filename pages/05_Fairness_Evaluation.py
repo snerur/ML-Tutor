@@ -219,7 +219,7 @@ if rows:
             return "background-color: #fff3cd; color: #856404"
         return ""
 
-    styled = fairness_df.style.applymap(color_status, subset=["Status"])
+    styled = fairness_df.style.map(color_status, subset=["Status"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # Fairness metrics radar chart
